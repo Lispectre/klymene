@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use tokio::{
+    net::UnixListener,
     sync::{
         broadcast,
         mpsc::{self, Receiver, Sender},
@@ -9,8 +10,9 @@ use tokio::{
     time::sleep,
 };
 
+use crate::messages::MainMessage;
 use crate::slsk::client::{peer_connections, server_connection};
-
+mod messages;
 mod slsk;
 
 // Main thread:
@@ -19,27 +21,42 @@ mod slsk;
 // - handles Unix socket to communicate with klymene_tui,
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    // As explained above, this isn't the way it should work, we won't oneshot Vecs of bytes back
-    // and forth. There will be just one mpsc channel, server thread and peer thread will receive
-    // tasks, threads will act on them. There may be times when servers send a task back to main,
-    // so main will have to coordinate.
-    let (main_sender, mut main_receiver) = mpsc::channel(1024);
-    let (server_sender, server_receiver) = mpsc::channel(1024);
-    let (peer_sender, peer_receiver) = mpsc::channel(1024);
+    let (main_sender, mut main_receiver) = mpsc::channel(512);
+    let (server_sender, server_receiver) = mpsc::channel(512);
+    let (peer_sender, peer_receiver) = mpsc::channel(512);
+    // let socket = UnixListener::bind("/run/klymene/control.sock")?;
 
+    // Handles communication with Soulseek authority.
     let server_connection_thread = tokio::spawn(server_connection(
-        (server_sender.clone(), server_receiver),
+        server_receiver,
         main_sender.clone(),
         peer_sender.clone(),
     ));
+
+    // Handles peer connections.
     let peer_connections_thread = tokio::spawn(peer_connections(
         (peer_sender.clone(), peer_receiver),
         main_sender.clone(),
         server_sender.clone(),
     ));
 
-    sleep(Duration::from_secs(5)).await;
-    main_receiver.close();
+    loop {
+        tokio::select! {
+            Some(msg) = main_receiver.recv() => {
+                println!("{:?}", msg);
+                match msg {
+                    MainMessage::ServerConnected => {
+                        println!("Successfully connected to Soulseek server.");
+                    }
+                    MainMessage::ServerConnectionFailed => {
+                        panic!("Soulseek connection failed!");
+                    }
+                    MainMessage::ServerShuttingDown => break,
+                    _ => (),
+                }
+            }
+        }
+    }
 
     // Don't think these should panic, just log.
     server_connection_thread

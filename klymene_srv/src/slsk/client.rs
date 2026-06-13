@@ -14,7 +14,9 @@ use tokio::{
     },
 };
 
-const BINDING_ADDRESS: &'static str = "127.0.0.1:2242";
+use crate::messages;
+
+const BINDING_ADDRESS: &'static str = "127.0.0.1:2243";
 const SOULFIND_ADDRESS: &'static str = "127.0.0.1:2242";
 
 /// Handles connecting to the Soulseek server and communicating with it. Doesn't spawn
@@ -23,12 +25,14 @@ const SOULFIND_ADDRESS: &'static str = "127.0.0.1:2242";
 /// When `should_quit` contains a message, this thread is told to shut down the connection
 /// gracefully (issuing proper messages to server) and close the stream.
 pub async fn server_connection(
-    (sender, receiver): (Sender<u8>, Receiver<u8>),
-    main_sender: Sender<u8>,
-    peer_sender: Sender<u8>,
+    receiver: Receiver<messages::ServerMessage>,
+    main_sender: Sender<messages::MainMessage>,
+    peer_sender: Sender<messages::PeerMessage>,
 ) -> std::io::Result<()> {
     let mut server_stream = {
-        const DELAY_DURATION: u64 = 5;
+        const DELAY_DURATION: u64 = 3;
+        const ALLOWED_RECONNECT_ATTEMPTS: u32 = 5;
+        let mut reconnect_attempts = 0u32;
         let result;
         loop {
             match TcpStream::connect(SOULFIND_ADDRESS).await {
@@ -37,10 +41,20 @@ pub async fn server_connection(
                     break;
                 }
                 Err(e) => {
+                    reconnect_attempts += 1;
                     eprintln!(
-                        "Failed to connect with Soulseek server ({}). Retrying in {} seconds.",
-                        e, DELAY_DURATION
+                        "Failed to connect with Soulseek server ({}). Retrying in {} seconds. ({}/{})",
+                        e, DELAY_DURATION, reconnect_attempts, ALLOWED_RECONNECT_ATTEMPTS,
                     );
+                    if reconnect_attempts > ALLOWED_RECONNECT_ATTEMPTS {
+                        main_sender
+                            .send(messages::MainMessage::ServerConnectionFailed)
+                            .await;
+                        main_sender
+                            .send(messages::MainMessage::ServerShuttingDown)
+                            .await;
+                        return Err(e);
+                    }
                     tokio::time::sleep(Duration::from_secs(DELAY_DURATION)).await;
                 }
             }
@@ -52,6 +66,9 @@ pub async fn server_connection(
         server_stream.local_addr()?,
         server_stream.peer_addr()?
     );
+    main_sender
+        .send(messages::MainMessage::ServerConnected)
+        .await;
 
     // TODO: above should be a function and below stream loop should check if the connection is active,
     // if not try to connect again
@@ -64,9 +81,12 @@ pub async fn server_connection(
 }
 
 pub async fn peer_connections(
-    (sender, receiver): (Sender<u8>, Receiver<u8>),
-    main_sender: Sender<u8>,
-    server_sender: Sender<u8>,
+    (sender, receiver): (
+        Sender<messages::PeerMessage>,
+        Receiver<messages::PeerMessage>,
+    ),
+    main_sender: Sender<messages::MainMessage>,
+    server_sender: Sender<messages::ServerMessage>,
 ) -> std::io::Result<()> {
     while !main_sender.is_closed() {}
     println!("Peer thread quitting");

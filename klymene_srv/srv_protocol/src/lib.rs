@@ -13,7 +13,7 @@ pub trait ProtocolMessage: Sized {
 }
 
 pub trait BinaryEncode {
-    fn encode(&self, buf: &mut Vec<u8>);
+    fn encode(&self) -> Vec<u8>;
 }
 
 pub trait BinaryDecode {
@@ -21,15 +21,19 @@ pub trait BinaryDecode {
 }
 
 impl BinaryEncode for u32 {
-    fn encode(&self, buf: &mut Vec<u8>) {
+    fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
         buf.extend(self.to_le_bytes());
+        buf
     }
 }
 
 impl BinaryEncode for String {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        (self.len() as u32).encode(buf);
+    fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend(u32::encode(&(self.len() as u32)));
         buf.extend(self.as_bytes());
+        buf
     }
 }
 
@@ -77,12 +81,14 @@ pub enum UsernameRejectionReason {
 }
 
 impl BinaryEncode for LoginRequest {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        self.username.encode(buf);
-        self.password.encode(buf);
-        self.version_number.encode(buf);
-        self.hash.encode(buf);
-        self.minor_version.encode(buf);
+    fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend(String::encode(&self.username));
+        buf.extend(String::encode(&self.password));
+        buf.extend(u32::encode(&self.version_number));
+        buf.extend(String::encode(&self.hash));
+        buf.extend(u32::encode(&self.minor_version));
+        buf
     }
 }
 
@@ -106,8 +112,8 @@ macro_rules! protocol_message {
 
             fn encode_request(req: &Self::Request) -> Vec<u8> {
                 let mut buf = Vec::new();
-                Self::CODE.encode(&mut buf);
-                req.encode(&mut buf);
+                buf.extend(Self::CODE.encode());
+                buf.extend(req.encode());
                 buf
             }
 
