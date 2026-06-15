@@ -7,8 +7,7 @@ edition = "2024"
 resolver = "3"
 members = [
   "klymene_srv",
-  "klymene_srv/srv_protocol",
-  
+
   "klymene_tui",
 ]
 
@@ -17,12 +16,6 @@ members = [
 [[bin]]
 name = "klymene_srv"
 path = "klymene_srv/src/main.rs"
-
-# Soulseek protocol implementation as a library.
-[lib]
-name = "srv_protocol"
-path = "klymene_srv/srv_protocol/src/lib.rs"
-test = true
 
 # Client - ratatui-based interface to interact with the service (search for files,
 # download them, chat with peers etc.)

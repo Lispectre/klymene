@@ -1,4 +1,8 @@
-use std::time::Duration;
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 
 use tokio::{
     net::UnixListener,
@@ -11,9 +15,13 @@ use tokio::{
 };
 
 use crate::messages::MainMessage;
-use crate::slsk::client::{peer_connections, server_connection};
+use crate::soulseek::client::{peer_connections, server_connection};
+use crate::soulseek::protocol::*;
 mod messages;
-mod slsk;
+mod soulseek;
+
+const LOCALHOST_ADDRESS: &'static str = "127.0.0.1";
+//const SOULFIND_ADDRESS: &'static str = "127.0.0.1:2242";
 
 // Main thread:
 // - creates and holds handles to server and peer threads,
@@ -27,32 +35,47 @@ async fn main() -> std::io::Result<()> {
     // let socket = UnixListener::bind("/run/klymene/control.sock")?;
 
     // Handles communication with Soulseek authority.
-    let server_connection_thread = tokio::spawn(server_connection(
-        server_receiver,
-        main_sender.clone(),
-        peer_sender.clone(),
-    ));
+    let server_connection_thread =
+        tokio::spawn(server_connection(server_receiver, main_sender.clone()));
 
     // Handles peer connections.
     let peer_connections_thread = tokio::spawn(peer_connections(
         (peer_sender.clone(), peer_receiver),
         main_sender.clone(),
-        server_sender.clone(),
     ));
+    let socket = Arc::new(SocketAddr::new(LOCALHOST_ADDRESS.parse().unwrap(), 2242));
+    let request = Arc::new(LoginRequest {
+        username: "username".into(),
+        password: "password".into(),
+        version_number: 177,
+        hash: "d51c9a7e9353746a6020f9602d452929".into(),
+        minor_version: 1,
+    });
 
     loop {
         tokio::select! {
             Some(msg) = main_receiver.recv() => {
                 println!("{:?}", msg);
                 match msg {
-                    MainMessage::ServerConnected => {
-                        println!("Successfully connected to Soulseek server.");
+                    MainMessage::ServerReady => {
+                        println!("Requesting initial connection");
+                        server_sender.send(messages::ServerMessage::Connect(socket.clone())).await.unwrap();
+                    },
+                    MainMessage::ServerConnected(addr) => {
+                        println!("Successfully connected to Soulseek server: {}", addr);
+                        server_sender.send(messages::ServerMessage::Login(request.clone())).await.unwrap();
                     }
                     MainMessage::ServerConnectionFailed => {
                         panic!("Soulseek connection failed!");
-                    }
+                    },
+                    MainMessage::ServerLoginSuccess(res) => {
+
+                    },
+                    MainMessage::ServerLoginFail(res) => {
+
+                    },
+                    MainMessage::ServerDisconnected => break,
                     MainMessage::ServerShuttingDown => break,
-                    _ => (),
                 }
             }
         }

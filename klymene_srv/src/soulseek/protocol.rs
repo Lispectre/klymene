@@ -1,4 +1,39 @@
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+/// A macro to create a struct that serves a particular type of message, associate auxiliary structs that constitute requests and responses,
+/// as well as implement methods to encode/decode those. This macro is to be used below for all known Soulseek messages.
+#[macro_export]
+macro_rules! protocol_message {
+    (
+        $name:ident,
+        code = $code:expr,
+        request = $req:ty,
+        success = $success:ty,
+        failure = $failure:ty
+    ) => {
+        pub struct $name;
+
+        impl ProtocolMessage for $name {
+            const CODE: u32 = $code;
+
+            type Request = $req;
+            type Success = $success;
+            type Failure = $failure;
+
+            fn encode_request(req: &Self::Request) -> Vec<u8> {
+                let mut buf = Vec::new();
+                buf.extend(Self::CODE.encode());
+                buf.extend(req.encode());
+                buf
+            }
+
+            fn decode_success(data: &[u8]) -> Self::Success {
+                <$success as BinaryDecode>::decode(data)
+            }
+            fn decode_failure(data: &[u8]) -> Self::Failure {
+                <$failure as BinaryDecode>::decode(data)
+            }
+        }
+    };
+}
 
 pub trait ProtocolMessage: Sized {
     const CODE: u32;
@@ -90,41 +125,6 @@ impl BinaryEncode for LoginRequest {
         buf.extend(u32::encode(&self.minor_version));
         buf
     }
-}
-
-#[macro_export]
-macro_rules! protocol_message {
-    (
-        $name:ident,
-        code = $code:expr,
-        request = $req:ty,
-        success = $success:ty,
-        failure = $failure:ty
-    ) => {
-        pub struct $name;
-
-        impl ProtocolMessage for $name {
-            const CODE: u32 = $code;
-
-            type Request = $req;
-            type Success = $success;
-            type Failure = $failure;
-
-            fn encode_request(req: &Self::Request) -> Vec<u8> {
-                let mut buf = Vec::new();
-                buf.extend(Self::CODE.encode());
-                buf.extend(req.encode());
-                buf
-            }
-
-            fn decode_success(data: &[u8]) -> Self::Success {
-                <$success as BinaryDecode>::decode(data)
-            }
-            fn decode_failure(data: &[u8]) -> Self::Failure {
-                <$failure as BinaryDecode>::decode(data)
-            }
-        }
-    };
 }
 
 protocol_message!(

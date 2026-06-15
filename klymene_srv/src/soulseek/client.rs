@@ -1,6 +1,6 @@
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
-use srv_protocol::ProtocolMessage;
+use crate::soulseek::protocol::ProtocolMessage;
 use tokio::{
     io::AsyncWriteExt,
     net::{
@@ -14,10 +14,7 @@ use tokio::{
     },
 };
 
-use crate::messages;
-
-const BINDING_ADDRESS: &'static str = "127.0.0.1:2243";
-const SOULFIND_ADDRESS: &'static str = "127.0.0.1:2242";
+use crate::messages::*;
 
 /// Handles connecting to the Soulseek server and communicating with it. Doesn't spawn
 /// threads, as there is a singular connection to a server. Shouldn't block.
@@ -25,68 +22,99 @@ const SOULFIND_ADDRESS: &'static str = "127.0.0.1:2242";
 /// When `should_quit` contains a message, this thread is told to shut down the connection
 /// gracefully (issuing proper messages to server) and close the stream.
 pub async fn server_connection(
-    receiver: Receiver<messages::ServerMessage>,
-    main_sender: Sender<messages::MainMessage>,
-    peer_sender: Sender<messages::PeerMessage>,
+    mut receiver: Receiver<ServerMessage>,
+    main_sender: Sender<MainMessage>,
 ) -> std::io::Result<()> {
-    let mut server_stream = {
-        const DELAY_DURATION: u64 = 3;
-        const ALLOWED_RECONNECT_ATTEMPTS: u32 = 5;
-        let mut reconnect_attempts = 0u32;
-        let result;
-        loop {
-            match TcpStream::connect(SOULFIND_ADDRESS).await {
-                Ok(v) => {
-                    result = v;
-                    break;
-                }
-                Err(e) => {
-                    reconnect_attempts += 1;
-                    eprintln!(
-                        "Failed to connect with Soulseek server ({}). Retrying in {} seconds. ({}/{})",
-                        e, DELAY_DURATION, reconnect_attempts, ALLOWED_RECONNECT_ATTEMPTS,
-                    );
-                    if reconnect_attempts > ALLOWED_RECONNECT_ATTEMPTS {
+    let mut server_stream: Option<TcpStream> = None;
+
+    main_sender.send(MainMessage::ServerReady).await.unwrap();
+    // TODO: above should be a function and below stream loop should check if the connection is active,
+    // if not try to connect again
+    loop {
+        tokio::select! {
+            Some(msg) = receiver.recv() => {
+                match msg {
+                    ServerMessage::Connect(addr) => {
+                        server_stream = match create_connection(&addr).await {
+                            Ok(s) => {
+                                main_sender
+                                    .send(MainMessage::ServerConnected(s.peer_addr().unwrap()))
+                                    .await
+                                    .unwrap();
+                                Some(s)
+                            },
+                            Err(e) => {
+                                eprintln!("Failed to establish Soulseek server connection: {}", e);
+                                main_sender
+                                    .send(MainMessage::ServerConnectionFailed)
+                                    .await
+                                    .unwrap();
+                                main_sender
+                                    .send(MainMessage::ServerShuttingDown)
+                                    .await
+                                    .unwrap();
+                                None
+                            }
+                        };
+                    },
+                    ServerMessage::Disconnect => {
+                        server_stream = None;
                         main_sender
-                            .send(messages::MainMessage::ServerConnectionFailed)
-                            .await;
-                        main_sender
-                            .send(messages::MainMessage::ServerShuttingDown)
-                            .await;
-                        return Err(e);
-                    }
-                    tokio::time::sleep(Duration::from_secs(DELAY_DURATION)).await;
+                            .send(MainMessage::ServerDisconnected)
+                            .await
+                            .unwrap();
+                        println!("Got disconnect request");
+                    },
+                    ServerMessage::Login(req) => {
+                        if server_stream.is_none() {
+                            continue;
+                        }
+                        println!("Got login request");
+                    },
+                    ServerMessage::Shutdown => {
+                        break;
+                    },
                 }
             }
         }
-        result
-    };
-    println!(
-        "Established connection with the server: {:?} -> {:?}",
-        server_stream.local_addr()?,
-        server_stream.peer_addr()?
-    );
-    main_sender
-        .send(messages::MainMessage::ServerConnected)
-        .await;
-
-    // TODO: above should be a function and below stream loop should check if the connection is active,
-    // if not try to connect again
-    while !main_sender.is_closed() {
-        // TODO
     }
     println!("Server thread quitting.");
-    server_stream.shutdown();
+    if let Some(mut stream) = server_stream {
+        stream.shutdown().await.unwrap();
+    }
     Ok(())
 }
 
+async fn create_connection(addr: &SocketAddr) -> std::io::Result<TcpStream> {
+    const DELAY_DURATION: u64 = 3;
+    const ALLOWED_RECONNECT_ATTEMPTS: u32 = 5;
+    let mut reconnect_attempts = 0u32;
+    let result;
+    loop {
+        match TcpStream::connect(addr).await {
+            Ok(v) => {
+                result = v;
+                break;
+            }
+            Err(e) => {
+                reconnect_attempts += 1;
+                eprintln!(
+                    "Failed to connect with Soulseek server ({}). Retrying in {} seconds. ({}/{})",
+                    e, DELAY_DURATION, reconnect_attempts, ALLOWED_RECONNECT_ATTEMPTS,
+                );
+                if reconnect_attempts > ALLOWED_RECONNECT_ATTEMPTS {
+                    return Err(e);
+                }
+                tokio::time::sleep(Duration::from_secs(DELAY_DURATION)).await;
+            }
+        }
+    }
+    Ok(result)
+}
+
 pub async fn peer_connections(
-    (sender, receiver): (
-        Sender<messages::PeerMessage>,
-        Receiver<messages::PeerMessage>,
-    ),
-    main_sender: Sender<messages::MainMessage>,
-    server_sender: Sender<messages::ServerMessage>,
+    (sender, receiver): (Sender<PeerMessage>, Receiver<PeerMessage>),
+    main_sender: Sender<MainMessage>,
 ) -> std::io::Result<()> {
     while !main_sender.is_closed() {}
     println!("Peer thread quitting");
@@ -184,7 +212,7 @@ impl TryFrom<u8> for PeerCode {
     type Error = ();
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        todo!()
+        todo!("Conversion Code -> u8 to be filled with a big match")
     }
 }
 
@@ -279,7 +307,7 @@ impl TryFrom<u32> for ServerCode {
     type Error = ();
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
-        todo!()
+        todo!("Conversion Code -> u8 to be filled with a big match")
     }
 }
 
